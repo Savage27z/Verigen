@@ -20,8 +20,11 @@ export async function generateImage(prompt: string): Promise<Buffer> {
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    const cause = err instanceof Error && err.cause ? String(err.cause) : '';
     console.error('[replicate] API error:', msg);
-    throw new Error(`Replicate API failed: ${msg}`);
+    if (cause) console.error('[replicate] cause:', cause);
+    const fullMsg = cause ? `${msg} (cause: ${cause})` : msg;
+    throw new Error(`Replicate API failed: ${fullMsg}`);
   }
 
   console.log('[replicate] output type:', typeof output, Array.isArray(output) ? `array[${output.length}]` : '');

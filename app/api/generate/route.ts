@@ -77,8 +77,12 @@ export async function POST(req: NextRequest) {
       creator,
     });
   } catch (err: unknown) {
-    console.error('[generate] error:', err);
     const message = err instanceof Error ? err.message : 'Internal error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    const stack = err instanceof Error ? err.stack : '';
+    const cause = err instanceof Error && err.cause ? String(err.cause) : '';
+    console.error('[generate] error:', message);
+    console.error('[generate] stack:', stack);
+    if (cause) console.error('[generate] cause:', cause);
+    return NextResponse.json({ error: message, cause }, { status: 500 });
   }
 }
