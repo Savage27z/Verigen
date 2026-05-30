@@ -137,32 +137,66 @@ export async function registerCertificate(params: {
     ],
   });
 
-  // Build transaction bytes using a minimal RPC client adapter
-  // The Transaction SDK needs these methods to resolve objects and function signatures
-  const rpcClient = {
-    getReferenceGasPrice: async () => {
-      const price = await rpcCall('suix_getReferenceGasPrice', []);
-      return BigInt(price as string);
-    },
-    getCoins: async ({ owner, coinType }: { owner: string; coinType?: string }) => {
-      return await rpcCall('suix_getCoins', [owner, coinType || '0x2::sui::SUI', null, 5]);
-    },
-    getObject: async ({ id, options }: { id: string; options?: Record<string, boolean> }) => {
-      return await rpcCall('sui_getObject', [id, options || { showContent: true, showOwner: true, showType: true }]);
-    },
-    multiGetObjects: async ({ ids, options }: { ids: string[]; options?: Record<string, boolean> }) => {
-      return await rpcCall('sui_multiGetObjects', [ids, options || { showContent: true, showOwner: true, showType: true }]);
-    },
-    getNormalizedMoveFunction: async ({ package: pkg, module, function: fn }: { package: string; module: string; function: string }) => {
-      return await rpcCall('sui_getNormalizedMoveFunction', [pkg, module, fn]);
-    },
-    dryRunTransactionBlock: async ({ transactionBlock }: { transactionBlock: string }) => {
-      return await rpcCall('sui_dryRunTransactionBlock', [transactionBlock]);
-    },
+  // Build transaction bytes using a Proxy-based RPC client adapter.
+  // The Transaction SDK calls various methods (getObject, getReferenceGasPrice,
+  // getNormalizedMoveFunction, getCurrentSystemState, etc.) during build().
+  // We use a JS Proxy to forward any method call to the Sui JSON-RPC fullnode.
+
+  // Map SDK method names to JSON-RPC method names
+  const methodMap: Record<string, string> = {
+    getObject: 'sui_getObject',
+    multiGetObjects: 'sui_multiGetObjects',
+    getCoins: 'suix_getCoins',
+    getReferenceGasPrice: 'suix_getReferenceGasPrice',
+    getNormalizedMoveFunction: 'sui_getNormalizedMoveFunction',
+    dryRunTransactionBlock: 'sui_dryRunTransactionBlock',
+    getLatestSuiSystemState: 'suix_getLatestSuiSystemState',
+    getCurrentSystemState: 'suix_getLatestSuiSystemState',
+    getLatestCheckpointSequenceNumber: 'sui_getLatestCheckpointSequenceNumber',
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const txBytes = await tx.build({ client: rpcClient as any });
+  const rpcClient = new Proxy({} as any, {
+    get(_target, prop: string) {
+      return async (args: Record<string, unknown> = {}) => {
+        const rpcMethod = methodMap[prop];
+        if (!rpcMethod) {
+          console.warn(`[tatum] unhandled client method: ${prop}`, args);
+          return undefined;
+        }
+
+        // Convert SDK-style named args to JSON-RPC positional args
+        if (prop === 'getObject') {
+          const { id, options } = args as { id: string; options?: Record<string, boolean> };
+          return rpcCall(rpcMethod, [id, options || { showContent: true, showOwner: true, showType: true }]);
+        }
+        if (prop === 'multiGetObjects') {
+          const { ids, options } = args as { ids: string[]; options?: Record<string, boolean> };
+          return rpcCall(rpcMethod, [ids, options || { showContent: true, showOwner: true, showType: true }]);
+        }
+        if (prop === 'getCoins') {
+          const a = args as { owner: string; coinType?: string };
+          return rpcCall(rpcMethod, [a.owner, a.coinType || '0x2::sui::SUI', null, 5]);
+        }
+        if (prop === 'getReferenceGasPrice') {
+          const price = await rpcCall(rpcMethod, []);
+          return BigInt(price as string);
+        }
+        if (prop === 'getNormalizedMoveFunction') {
+          const a = args as { package: string; module: string; function: string };
+          return rpcCall(rpcMethod, [a.package, a.module, a.function]);
+        }
+        if (prop === 'dryRunTransactionBlock') {
+          const a = args as { transactionBlock: string };
+          return rpcCall(rpcMethod, [a.transactionBlock]);
+        }
+        // Default: call with no params
+        return rpcCall(rpcMethod, []);
+      };
+    },
+  });
+
+  const txBytes = await tx.build({ client: rpcClient });
 
   console.log('[tatum] tx built, signing...');
 
