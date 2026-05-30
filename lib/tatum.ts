@@ -3,30 +3,62 @@
  * This avoids SDK version compatibility issues and works reliably on Vercel.
  */
 
+// Tatum RPC for writes (with API key auth)
 const TATUM_RPC = 'https://sui-mainnet.gateway.tatum.io';
 const TATUM_TESTNET_RPC = 'https://sui-testnet.gateway.tatum.io';
 
-function getRpcUrl(): string {
+// Public Sui fullnode for reads (no rate limits)
+const SUI_FULLNODE = 'https://fullnode.mainnet.sui.io:443';
+const SUI_TESTNET_FULLNODE = 'https://fullnode.testnet.sui.io:443';
+
+function getTatumUrl(): string {
   return process.env.SUI_NETWORK === 'mainnet' ? TATUM_RPC : TATUM_TESTNET_RPC;
 }
 
+function getFullnodeUrl(): string {
+  return process.env.SUI_NETWORK === 'mainnet' ? SUI_FULLNODE : SUI_TESTNET_FULLNODE;
+}
+
+/** RPC call to public Sui fullnode (reads — no rate limits) */
 async function rpcCall(method: string, params: unknown[]): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const res = await fetch(getRpcUrl(), {
+    const res = await fetch(getFullnodeUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`Sui RPC HTTP error: ${res.status}`);
+    }
+
+    const json = await res.json();
+    if (json.error) {
+      throw new Error(`Sui RPC error: ${JSON.stringify(json.error)}`);
+    }
+    return json.result;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** RPC call to Tatum gateway (writes — uses API key) */
+async function tatumRpcCall(method: string, params: unknown[]): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const res = await fetch(getTatumUrl(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': process.env.TATUM_API_KEY || '',
       },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method,
-        params,
-      }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
       signal: controller.signal,
     });
 
@@ -38,7 +70,6 @@ async function rpcCall(method: string, params: unknown[]): Promise<unknown> {
     if (json.error) {
       throw new Error(`Tatum RPC error: ${JSON.stringify(json.error)}`);
     }
-
     return json.result;
   } finally {
     clearTimeout(timeout);
@@ -164,9 +195,9 @@ export async function registerCertificate(params: {
 
   console.log('[tatum] submitting to Tatum RPC...');
 
-  // Step 4: Execute via Tatum RPC
+  // Step 4: Execute via Tatum RPC (write operation — uses API key)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await rpcCall('sui_executeTransactionBlock', [
+  const result = await tatumRpcCall('sui_executeTransactionBlock', [
     txBase64,
     [signature],
     { showEffects: true },
